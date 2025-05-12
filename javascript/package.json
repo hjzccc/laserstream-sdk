@@ -1,0 +1,55 @@
+{
+  "name": "helius-laserstream",
+  "version": "0.0.6",
+  "description": "TypeScript client for LaserStream gRPC with robust reconnection and slot tracking",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "example:basic": "ts-node examples/basic-usage.ts",
+    "example:account-sub": "ts-node examples/account-sub.ts",
+    "lint": "eslint src/**/*.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "solana",
+    "laserstream",
+    "yellowstone",
+    "grpc",
+    "blockchain",
+    "helius"
+  ],
+  "author": "Helius",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/helius-labs/laserstream.git"
+  },
+  "bugs": {
+    "url": "https://github.com/helius-labs/laserstream/issues"
+  },
+  "homepage": "https://github.com/helius-labs/laserstream/tree/main/javascript#readme",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@triton-one/yellowstone-grpc": "^4.0.0",
+    "bs58": "^5.0.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.4.5",
+    "@types/uuid": "^9.0.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.1.6"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
