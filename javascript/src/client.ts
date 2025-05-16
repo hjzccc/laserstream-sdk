@@ -153,7 +153,7 @@ async function subscribeWithReplayTracking(
     subscription.on('data', (data) => {
       // Track slot number for reconnection purposes regardless of subscription type
       if (data.slot) {
-        state.trackedSlot = data.slot.slot;
+        state.trackedSlot = parseInt(data.slot.slot);
         
         // Don't forward internal tracking slot data
         if (state.internalSub) {
@@ -195,7 +195,11 @@ function handleReconnection(state: State, error: Error) {
   // Increment attempts before scheduling reconnection
   state.reconnectAttempts += 1;
 
-  // Schedule reconnection attempt after the fixed interval
+  // Ensure we resume from last tracked slot on next attempt
+  if (state.trackedSlot > 0) {
+    state.subscription.fromSlot = state.trackedSlot.toString();
+  }
+
   setTimeout(() => {
     subscribeWithReplayTracking(
       state.config,
