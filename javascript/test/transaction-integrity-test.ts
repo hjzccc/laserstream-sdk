@@ -10,7 +10,7 @@ async function main() {
 
   const PUMP = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 
-  // Primary stream (under test)
+  // Laserstream stream (under test)
   const config: LaserstreamConfig = {
     apiKey: '',
     endpoint: ''
@@ -37,36 +37,71 @@ async function main() {
     accountsDataSlice: [],
   };
 
-  //Yellowstone node for comparing with Laserstream
-  const referenceConfig = {
+  // Yellowstone node for comparing with Laserstream
+  const yellowstoneConfig = {
     endpoint: '',
     xToken: ''
   } as const;
 
 
-  const gotA = new Set<string>(); // primary signatures
-  const gotB = new Set<string>(); // reference signatures
-  let newA = 0;
-  let newB = 0;
+  const gotLS = new Set<string>(); // laserstream signatures
+  const gotYS = new Set<string>(); // yellowstone signatures
 
+  // Store latest slot for each signature so we can give more context when reporting mismatches.
+  const slotLS = new Map<string, string>();
+  const slotYS = new Map<string, string>();
+  let newLS = 0;
+  let newYS = 0;
+  let errLS = 0;
+  let errYS = 0;
+
+  // --- per-slot tracking to avoid premature mismatch logging ---
+  const lsBySlot = new Map<number, Set<string>>();
+  const ysBySlot = new Map<number, Set<string>>();
+  let maxSlotLS = 0;
+  let maxSlotYS = 0;
+  const SLOT_LAG = 3000; // number of slots to wait before declaring a slot closed
 
   const INTEGRITY_CHECK_INTERVAL_MS = 30_000; // 30 seconds
   setInterval(async () => {
-    const missed = new Set<string>();
-    for (const sig of gotB) {
-      if (!gotA.has(sig)) missed.add(sig);
+    const readySlot = Math.min(maxSlotLS, maxSlotYS) - SLOT_LAG; // wait additional slots for late txs
+
+    const slotsToProcess = new Set<number>();
+    for (const s of lsBySlot.keys()) if (s <= readySlot) slotsToProcess.add(s);
+    for (const s of ysBySlot.keys()) if (s <= readySlot) slotsToProcess.add(s);
+
+    let totalMissingLS = 0;
+    let totalMissingYS = 0;
+
+    for (const slot of slotsToProcess) {
+      const setLS = lsBySlot.get(slot) ?? new Set<string>();
+      const setYS = ysBySlot.get(slot) ?? new Set<string>();
+
+      const missingLS = new Set<string>(); // present in YS but not LS
+      const missingYS = new Set<string>(); // present in LS but not YS
+
+      for (const sig of setYS) if (!setLS.has(sig)) missingLS.add(sig);
+      for (const sig of setLS) if (!setYS.has(sig)) missingYS.add(sig);
+
+      if (missingLS.size || missingYS.size) {
+        console.error(`[INTEGRITY] transaction_mismatch slot=${slot}  missing Laserstream=${missingLS.size} missing Yellowstone=${missingYS.size}`);
+        for (const sig of missingLS) console.error(`SIGNATURE MISSING IN LASERSTREAM ${sig}  (YS_slot=${slot})`);
+        for (const sig of missingYS) console.error(`SIGNATURE MISSING IN YELLOWSTONE ${sig}  (LS_slot=${slot})`);
+      }
+
+      totalMissingLS += missingLS.size;
+      totalMissingYS += missingYS.size;
+
+      lsBySlot.delete(slot);
+      ysBySlot.delete(slot);
     }
 
     const now = new Date().toISOString();
-    console.log(`[${now}] A:+${newA}  B:+${newB}  missed:${missed.size}`);
-
-    if (missed.size) {
-      for (const sig of missed) console.error(`MISSED ${sig}`);
-    }
+    console.log(`[${now}] laserstream+${newLS}  yellowstone+${newYS}  processedSlots:${slotsToProcess.size} missingLS:${totalMissingLS} missingYS:${totalMissingYS}  LS_errors:${errLS}  YS_errors:${errYS}`);
 
     // reset counters (keep global sets for history but clear new counters)
-    newA = 0;
-    newB = 0;
+    newLS = 0;
+    newYS = 0;
   }, INTEGRITY_CHECK_INTERVAL_MS);
 
   console.log('Starting transaction integrity test…');
@@ -92,18 +127,18 @@ async function main() {
     return {sig: sigStr, slot: slotStr};
   }
 
-  const statusMap = new Map<string, {slotPrimary?: string; slotRef?: string}>();
+  const statusMap = new Map<string, {slotLS?: string; slotYS?: string}>();
 
   function maybePrint(sig: string) {
     const entry = statusMap.get(sig);
-    if (entry && entry.slotPrimary && entry.slotRef) {
-      console.log(`MATCH ${sig}  LS_slot=${entry.slotPrimary}  YS_slot=${entry.slotRef}`);
+    if (entry && entry.slotLS && entry.slotYS) {
+      console.log(`MATCH ${sig}  LS_slot=${entry.slotLS}  YS_slot=${entry.slotYS}`);
       statusMap.delete(sig);
     }
   }
 
   // ---------- helper to start a stream ----------
-  const startPrimaryStream = async (
+  const startLaserstreamStream = async (
     cfg: LaserstreamConfig,
     onSig: (sig: string) => void,
     label: string
@@ -113,22 +148,31 @@ async function main() {
       subscriptionRequest,
       (u) => {
         const {sig, slot} = extractSigAndSlot(u);
-        if (!sig) return;
+        if (!sig || !slot) return;
         onSig(sig);
-        const entry = statusMap.get(sig) || {};
-        entry.slotPrimary = slot ?? 'unknown';
+
+        slotLS.set(sig, slot);
+
+        const slotNum = Number(slot);
+        if (!lsBySlot.has(slotNum)) lsBySlot.set(slotNum, new Set());
+        lsBySlot.get(slotNum)!.add(sig);
+        if (slotNum > maxSlotLS) maxSlotLS = slotNum;
+
+        const entry: any = statusMap.get(sig) || {};
+        entry.slotLS = slot ?? 'unknown';
         statusMap.set(sig, entry);
         maybePrint(sig);
       },
       (err) => {
+        errLS += 1;
         console.error(`${label} error:`, err);
       }
     );
   };
 
   // Reference stream using raw Yellowstone gRPC client
-  const startReferenceStream = async () => {
-    const client = new Client(referenceConfig.endpoint, referenceConfig.xToken, {
+  const startYellowstoneStream = async () => {
+    const client = new Client(yellowstoneConfig.endpoint, yellowstoneConfig.xToken, {
       "grpc.max_receive_message_length": 64 * 1024 * 1024,
     });
 
@@ -144,26 +188,34 @@ async function main() {
 
     stream.on('data', (u: any) => {
       const {sig, slot} = extractSigAndSlot(u);
-      if (!sig) return;
-      gotB.add(sig);
-      newB += 1;
+      if (!sig || !slot) return;
+      gotYS.add(sig);
+      newYS += 1;
 
-      const entry = statusMap.get(sig) || {};
-      entry.slotRef = slot ?? 'unknown';
+      slotYS.set(sig, slot);
+
+      const slotNum = Number(slot);
+      if (!ysBySlot.has(slotNum)) ysBySlot.set(slotNum, new Set());
+      ysBySlot.get(slotNum)!.add(sig);
+      if (slotNum > maxSlotYS) maxSlotYS = slotNum;
+
+      const entry: any = statusMap.get(sig) || {};
+      entry.slotYS = slot ?? 'unknown';
       statusMap.set(sig, entry);
       maybePrint(sig);
     });
 
-    stream.on('error', (e: Error) => console.error('REFERENCE stream error:', e));
+    stream.on('error', (e: Error) => { errYS += 1; console.error('YELLOWSTONE stream error:', e); });
+    stream.on('end', () => { errYS += 1; console.error('YELLOWSTONE stream ended'); });
   };
 
   // Start both streams concurrently
   await Promise.all([
-    startPrimaryStream(config, (sig) => {
-      gotA.add(sig);
-      newA += 1;
-    }, 'PRIMARY'),
-    startReferenceStream(),
+    startLaserstreamStream(config, (sig) => {
+      gotLS.add(sig);
+      newLS += 1;
+    }, 'LASERSTREAM'),
+    startYellowstoneStream(),
   ]);
 
   // Keep the script alive indefinitely so we can continue to receive updates.
