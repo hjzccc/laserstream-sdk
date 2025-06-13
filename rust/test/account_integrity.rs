@@ -14,6 +14,16 @@ use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use bs58;
 use tracing::{error, warn};
 use std::io::{self, Write};
+use sha2::{Sha256, Digest};
+
+// Helper to normalise debug output by zeroing-out volatile fields (e.g. write_version)
+fn fingerprint_account(data: &[u8], lamports: u64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.update(&lamports.to_le_bytes());
+    let digest = hasher.finalize();
+    format!("{:x}", digest)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,6 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let latest_ls: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let latest_ys: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    let max_slot_ls = Arc::new(Mutex::new(0u64));
+    let max_slot_ys = Arc::new(Mutex::new(0u64));
+
     let mut handles = Vec::new();
 
     // ---- Laserstream Task ----
@@ -69,8 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let req = subscribe_req.clone();
         let state = Arc::clone(&state);
         let latest_ls = Arc::clone(&latest_ls);
+        let max_ls_ptr = Arc::clone(&max_slot_ls);
         let handle = tokio::spawn(async move {
-            let mut stream = subscribe(laser_cfg, req);
+            let stream = subscribe(laser_cfg, req);
             futures::pin_mut!(stream);
             while let Some(res) = stream.next().await {
                 match res {
@@ -85,11 +99,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let entry = st.entry(key_b58.clone()).or_default();
                                     entry.slot_ls = Some(slot);
                                 }
+                                {
+                                    let mut m = max_ls_ptr.lock().await;
+                                    if slot > *m { *m = slot; }
+                                }
                                 // Store serialised update for comparison
                                 {
                                     let mut map = latest_ls.lock().await;
                                     let key_b58_copy = key_b58.clone();
-                                    map.insert(key_b58_copy, format!("{:?}", update));
+                                    let fp = fingerprint_account(&account_msg.data, account_msg.lamports);
+                                    map.insert(key_b58_copy, fp);
                                 }
                                 println!("[LS] key={} slot={}", key_b58, slot);
                                 io::stdout().flush().ok();
@@ -110,6 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let req = subscribe_req.clone();
         let state = Arc::clone(&state);
         let latest_ys = Arc::clone(&latest_ys);
+        let max_ys_ptr = Arc::clone(&max_slot_ys);
         let handle = tokio::spawn(async move {
             // Build client
             let mut builder = GeyserGrpcClient::build_from_shared(yellowstone_endpoint)
@@ -136,9 +156,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     entry.slot_ys = Some(slot);
                                 }
                                 {
+                                    let mut m = max_ys_ptr.lock().await;
+                                    if slot > *m { *m = slot; }
+                                }
+                                {
                                     let mut map = latest_ys.lock().await;
                                     let key_b58_copy = key_b58.clone();
-                                    map.insert(key_b58_copy, format!("{:?}", update));
+                                    let fp = fingerprint_account(&account_msg.data, account_msg.lamports);
+                                    map.insert(key_b58_copy, fp);
                                 }
                                 println!("[YS] key={} slot={}", key_b58, slot);
                                 io::stdout().flush().ok();
@@ -159,6 +184,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = Arc::clone(&state);
         let latest_ls = Arc::clone(&latest_ls);
         let latest_ys = Arc::clone(&latest_ys);
+        let max_ls_ptr = Arc::clone(&max_slot_ls);
+        let max_ys_ptr = Arc::clone(&max_slot_ys);
         let handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_millis(INTERVAL_MS));
             loop {
@@ -174,6 +201,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut missing_ls = Vec::new();
                 let mut missing_ys = Vec::new();
                 let mut mismatched = Vec::new();
+
+                let ready_slot;
+                {
+                    let ls_max = *max_ls_ptr.lock().await;
+                    let ys_max = *max_ys_ptr.lock().await;
+                    ready_slot = ls_max.min(ys_max).saturating_sub(SLOT_LAG);
+                }
 
                 for k in all_keys {
                     let ls_bytes = ls_guard.get(&k);
@@ -196,11 +230,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // compare bytes only when slots match
-                    if ls_slot != ys_slot {
+                    // compare only when both slots are known, match and are <= ready_slot (so unlikely to change)
+                    if ls_slot != ys_slot || ls_slot.unwrap_or(0) > ready_slot || ys_slot.unwrap_or(0) > ready_slot {
                         continue;
                     }
                     if ls_bytes != ys_bytes {
+                        error!("ACCOUNT PAYLOAD MISMATCH {}", k);
+                        if let Some(a) = ls_bytes { error!("LS payload: {}", a); }
+                        if let Some(b) = ys_bytes { error!("YS payload: {}", b); }
                         mismatched.push(k.clone());
                     }
                 }
