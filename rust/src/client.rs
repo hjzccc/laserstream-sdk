@@ -94,18 +94,14 @@ pub fn subscribe(
                             Err(status) => {
                                 // status is now tonic::Status due to map_err above
                                 warn!(error = %status, "Stream error, attempting reconnection");
-                                eprintln!("Stream error, attempting reconnection: {}", status);
-                                break;
                             }
                         }
                     }
                     warn!("Stream ended, preparing to reconnect...");
-                    eprintln!("Stream ended, preparing to reconnect...");
                 }
                 Err(err) => {
                     // Error from connect_and_subscribe_once (GeyserGrpcClientError)
                     warn!(error = %err, "Failed to connect/subscribe, preparing to reconnect...");
-                    eprintln!("Failed to connect/subscribe, preparing to reconnect: {}", err);
                 }
             }
 
