@@ -109,25 +109,25 @@ pub fn subscribe(
                                     }
                                 }
                             }
-                            additional_req = additional_request_rx.next() => {
-                                // println!("Additional request received: {:?}", additional_req);
-                                match additional_req {
-                                    Some(new_request) => {
-                                        // Send the additional request through the gRPC connection
-                                        // println!("Sending additional request: {:?}", new_request);
-                                        if let Err(e) = sender.send(new_request).await {
-                                            warn!(error = %e, "Failed to send additional request");
-                                            break;
-                                        }
-                                        // println!("Additional request sent");
-                                    }
-                                    None => {
-                                        // Channel closed, but continue with the stream
-                                        // You might want to break here if you want to stop when no more requests can be sent
-                                        // warn!("Additional request channel closed");
-                                    }
-                                }
-                            }
+                            // additional_req = additional_request_rx.next() => {
+                            //     // println!("Additional request received: {:?}", additional_req);
+                            //     match additional_req {
+                            //         Some(new_request) => {
+                            //             // Send the additional request through the gRPC connection
+                            //             // println!("Sending additional request: {:?}", new_request);
+                            //             if let Err(e) = sender.send(new_request).await {
+                            //                 warn!(error = %e, "Failed to send additional request");
+                            //                 break;
+                            //             }
+                            //             // println!("Additional request sent");
+                            //         }
+                            //         None => {
+                            //             // Channel closed, but continue with the stream
+                            //             // You might want to break here if you want to stop when no more requests can be sent
+                            //             // warn!("Additional request channel closed");
+                            //         }
+                            //     }
+                            // }
                         }
                     }
                     warn!("Connection loop ended, preparing to reconnect...");
