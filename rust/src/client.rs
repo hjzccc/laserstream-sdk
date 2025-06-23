@@ -28,6 +28,7 @@ pub fn subscribe(
     futures_mpsc::UnboundedSender<SubscribeRequest>,
 ) {
     let (additional_request_tx, mut additional_request_rx) = futures_mpsc::unbounded();
+    let mut additional_request_rx = additional_request_rx.fuse();
     let stream = try_stream! {
         let mut reconnect_attempts = 0;
         let mut tracked_slot: u64 = 0;
@@ -109,25 +110,25 @@ pub fn subscribe(
                                     }
                                 }
                             }
-                            // additional_req = additional_request_rx.next() => {
-                            //     // println!("Additional request received: {:?}", additional_req);
-                            //     match additional_req {
-                            //         Some(new_request) => {
-                            //             // Send the additional request through the gRPC connection
-                            //             // println!("Sending additional request: {:?}", new_request);
-                            //             if let Err(e) = sender.send(new_request).await {
-                            //                 warn!(error = %e, "Failed to send additional request");
-                            //                 break;
-                            //             }
-                            //             // println!("Additional request sent");
-                            //         }
-                            //         None => {
-                            //             // Channel closed, but continue with the stream
-                            //             // You might want to break here if you want to stop when no more requests can be sent
-                            //             // warn!("Additional request channel closed");
-                            //         }
-                            //     }
-                            // }
+                            additional_req = additional_request_rx.next() => {
+                                // println!("Additional request received: {:?}", additional_req);
+                                match additional_req {
+                                    Some(new_request) => {
+                                        // Send the additional request through the gRPC connection
+                                        // println!("Sending additional request: {:?}", new_request);
+                                        if let Err(e) = sender.send(new_request).await {
+                                            warn!(error = %e, "Failed to send additional request");
+                                            break;
+                                        }
+                                        // println!("Additional request sent");
+                                    }
+                                    None => {
+                                        // Channel closed, but continue with the stream
+                                        // You might want to break here if you want to stop when no more requests can be sent
+                                        // warn!("Additional request channel closed");
+                                    }
+                                }
+                            }
                         }
                     }
                     warn!("Connection loop ended, preparing to reconnect...");
