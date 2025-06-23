@@ -126,7 +126,7 @@ pub fn subscribe(
                                     None => {
                                         // Channel closed, but continue with the stream
                                         // You might want to break here if you want to stop when no more requests can be sent
-                                        // warn!("Additional request channel closed");
+                                        warn!("Additional request channel closed");
                                     }
                                 }
                             }
