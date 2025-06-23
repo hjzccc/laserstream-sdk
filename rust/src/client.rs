@@ -123,7 +123,7 @@ pub fn subscribe(
 }
 
 #[instrument(skip(config, request, api_key))]
-async fn connect_and_subscribe_once(
+pub async fn connect_and_subscribe_once(
     config: &LaserstreamConfig,
     request: Option<SubscribeRequest>,
     api_key: String,
