@@ -1,15 +1,15 @@
 use helius_laserstream::{
     grpc::{
-        CommitmentLevel, SubscribeRequest, SubscribeRequestFilterSlots,
-        subscribe_update::UpdateOneof,
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestFilterSlots,
     },
     subscribe, LaserstreamConfig,
 };
-use tokio_stream::StreamExt;
 use reqwest::Client;
 use serde_json::json;
-use tracing::{error, warn};
 use std::io::{self, Write};
+use tokio_stream::StreamExt;
+use tracing::{error, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting block integrity test. Subscribing to slots…");
 
     let api_key_clone = cfg.api_key.clone();
-    let mut stream = subscribe(cfg, req);
+    let mut stream = subscribe(cfg, Some(req));
     futures::pin_mut!(stream);
 
     while let Some(res) = stream.next().await {
@@ -61,7 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if current_slot != last + 1 {
                             // Iterate through gap slots
                             for missing in (last + 1)..current_slot {
-                                if block_exists(&client, rpc_endpoint, &api_key_clone, missing).await? {
+                                if block_exists(&client, rpc_endpoint, &api_key_clone, missing)
+                                    .await?
+                                {
                                     error!("ERROR: Missed slot {} – block exists but was not received.", missing);
                                 } else {
                                     println!("Skipped slot {} (no block produced)", missing);
@@ -84,7 +86,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn block_exists(client: &Client, endpoint: &str, api_key: &str, slot: u64) -> Result<bool, Box<dyn std::error::Error>> {
+async fn block_exists(
+    client: &Client,
+    endpoint: &str,
+    api_key: &str,
+    slot: u64,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -100,7 +107,8 @@ async fn block_exists(client: &Client, endpoint: &str, api_key: &str, slot: u64)
         ]
     });
 
-    let resp = client.post(format!("{}?api-key={}", endpoint, api_key))
+    let resp = client
+        .post(format!("{}?api-key={}", endpoint, api_key))
         .json(&body)
         .send()
         .await?;
@@ -113,4 +121,4 @@ async fn block_exists(client: &Client, endpoint: &str, api_key: &str, slot: u64)
         }
     }
     Ok(true)
-} 
+}

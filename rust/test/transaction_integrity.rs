@@ -1,17 +1,18 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use bs58;
 use helius_laserstream::{
     grpc::{
-        CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions, subscribe_update::UpdateOneof,
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestFilterTransactions,
     },
     subscribe, LaserstreamConfig,
 };
-use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 use tracing::{error, info, warn};
-use bs58;
-use std::io::{self, Write};
+use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,13 +51,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // ---- Shared State ----
-    let ls_by_slot: Arc<Mutex<HashMap<u64, HashSet<String>>>> = Arc::new(Mutex::new(HashMap::new()));
-    let ys_by_slot: Arc<Mutex<HashMap<u64, HashSet<String>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let ls_by_slot: Arc<Mutex<HashMap<u64, HashSet<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let ys_by_slot: Arc<Mutex<HashMap<u64, HashSet<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let max_slot_ls = Arc::new(Mutex::new(0u64));
     let max_slot_ys = Arc::new(Mutex::new(0u64));
 
     // For display and match when both slots known
-    let status_map: Arc<Mutex<HashMap<String, (Option<u64>, Option<u64>)>>> = Arc::new(Mutex::new(HashMap::new()));
+    let status_map: Arc<Mutex<HashMap<String, (Option<u64>, Option<u64>)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     // Counters for periodic report
     let new_ls = Arc::new(Mutex::new(0u64));
@@ -73,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let status_map = Arc::clone(&status_map);
         let err_ls_counter = Arc::clone(&err_ls);
         tokio::spawn(async move {
-            let mut stream = subscribe(laser_cfg, req);
+            let mut stream = subscribe(laser_cfg, Some(req));
             futures::pin_mut!(stream);
             while let Some(res) = stream.next().await {
                 match res {
@@ -91,16 +95,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 {
                                     let mut m = max_slot_ls.lock().await;
-                                    if slot > *m { *m = slot; }
+                                    if slot > *m {
+                                        *m = slot;
+                                    }
                                 }
                                 {
-                                    let mut c = new_ls_counter.lock().await; *c += 1; }
+                                    let mut c = new_ls_counter.lock().await;
+                                    *c += 1;
+                                }
                                 {
                                     let mut st = status_map.lock().await;
                                     let entry = st.entry(sig_str.clone()).or_insert((None, None));
                                     entry.0 = Some(slot);
                                     if entry.0.is_some() && entry.1.is_some() {
-                                        info!("MATCH {}  LS_slot={}  YS_slot={}", sig_str, slot, entry.1.unwrap());
+                                        info!(
+                                            "MATCH {}  LS_slot={}  YS_slot={}",
+                                            sig_str,
+                                            slot,
+                                            entry.1.unwrap()
+                                        );
                                         st.remove(&sig_str);
                                         println!("[LS] sig={} slot={}", sig_str, slot);
                                         io::stdout().flush().ok();
@@ -154,16 +167,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     map.entry(slot).or_default().insert(sig_str.clone());
                                 }
                                 {
-                                    let mut m = max_slot_ys.lock().await; if slot > *m { *m = slot; }
+                                    let mut m = max_slot_ys.lock().await;
+                                    if slot > *m {
+                                        *m = slot;
+                                    }
                                 }
                                 {
-                                    let mut c = new_ys_counter.lock().await; *c += 1; }
+                                    let mut c = new_ys_counter.lock().await;
+                                    *c += 1;
+                                }
                                 {
                                     let mut st = status_map.lock().await;
                                     let entry = st.entry(sig_str.clone()).or_insert((None, None));
                                     entry.1 = Some(slot);
                                     if entry.0.is_some() && entry.1.is_some() {
-                                        info!("MATCH {}  LS_slot={}  YS_slot={}", sig_str, entry.0.unwrap(), slot);
+                                        info!(
+                                            "MATCH {}  LS_slot={}  YS_slot={}",
+                                            sig_str,
+                                            entry.0.unwrap(),
+                                            slot
+                                        );
                                         st.remove(&sig_str);
                                         println!("[YS] sig={} slot={}", sig_str, slot);
                                         io::stdout().flush().ok();
@@ -213,7 +236,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let slots: HashSet<u64> = ls_map.keys().chain(ys_map.keys()).cloned().collect();
 
                 for slot in slots {
-                    if slot > ready_slot { continue; }
+                    if slot > ready_slot {
+                        continue;
+                    }
                     processed_slots += 1;
                     let set_ls = ls_map.remove(&slot).unwrap_or_default();
                     let set_ys = ys_map.remove(&slot).unwrap_or_default();
@@ -222,8 +247,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if !missing_ls.is_empty() || !missing_ys.is_empty() {
                         error!("[INTEGRITY] transaction_mismatch slot={} missing Laserstream={} missing Yellowstone={}", slot, missing_ls.len(), missing_ys.len());
-                        for sig in &missing_ls { error!("SIGNATURE MISSING IN LASERSTREAM {} (YS_slot={})", sig, slot); }
-                        for sig in &missing_ys { error!("SIGNATURE MISSING IN YELLOWSTONE {} (LS_slot={})", sig, slot); }
+                        for sig in &missing_ls {
+                            error!(
+                                "SIGNATURE MISSING IN LASERSTREAM {} (YS_slot={})",
+                                sig, slot
+                            );
+                        }
+                        for sig in &missing_ys {
+                            error!(
+                                "SIGNATURE MISSING IN YELLOWSTONE {} (LS_slot={})",
+                                sig, slot
+                            );
+                        }
                     }
 
                     total_missing_ls += missing_ls.len();
@@ -250,4 +285,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     futures::future::pending::<()>().await;
 
     Ok(())
-} 
+}

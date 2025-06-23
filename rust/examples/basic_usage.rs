@@ -1,16 +1,12 @@
 use futures_util::StreamExt;
 use helius_laserstream::{
-    grpc::{
-        SubscribeRequest,
-        SubscribeRequestFilterTransactions,
-    },
+    grpc::{SubscribeRequest, SubscribeRequestFilterTransactions},
     subscribe, LaserstreamConfig,
 };
 use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     let api_key = String::from("");
     let endpoint_url = String::from("");
 
@@ -24,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to all confirmed non-vote transactions involving the Token program
     let mut token_transactions_filter = HashMap::new();
     token_transactions_filter.insert(
-        "client".to_string(), 
+        "client".to_string(),
         SubscribeRequestFilterTransactions {
             account_include: vec!["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()],
             vote: Some(false),
@@ -40,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Subscribe and Process ---
     println!("Connecting and subscribing...");
-    let stream = subscribe(config, request);
+    let stream = subscribe(config, Some(request));
 
     // Pin the stream to the stack
     futures::pin_mut!(stream);

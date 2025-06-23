@@ -1,20 +1,19 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use bs58;
 use futures_util::StreamExt;
 use helius_laserstream::{
     grpc::{
-        CommitmentLevel, SubscribeRequest, SubscribeRequestAccountsDataSlice,
-        SubscribeRequestFilterAccounts,
-        subscribe_update::UpdateOneof,
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestAccountsDataSlice, SubscribeRequestFilterAccounts,
     },
     subscribe, LaserstreamConfig,
 };
-use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
-use bs58;
-use tracing::{error, warn};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
-use sha2::{Sha256, Digest};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{error, warn};
+use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 
 // Helper to normalise debug output by zeroing-out volatile fields (e.g. write_version)
 fn fingerprint_account(data: &[u8], lamports: u64) -> String {
@@ -30,12 +29,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("info")
         .with_target(false)
-        .init();    
+        .init();
 
     // ---- Configuration ----
     const ACCOUNTS: [&str; 2] = [
         "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", // Pump AMM program
-        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",   // SPL Token program
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", // SPL Token program
     ];
 
     let laser_cfg = LaserstreamConfig {
@@ -66,7 +65,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Shared State ----
     #[derive(Default, Clone)]
-    struct Seen { slot_ls: Option<u64>, slot_ys: Option<u64> }
+    struct Seen {
+        slot_ls: Option<u64>,
+        slot_ys: Option<u64>,
+    }
 
     let state: Arc<Mutex<HashMap<String, Seen>>> = Arc::new(Mutex::new(HashMap::new()));
     let latest_ls: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -84,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let latest_ls = Arc::clone(&latest_ls);
         let max_ls_ptr = Arc::clone(&max_slot_ls);
         let handle = tokio::spawn(async move {
-            let stream = subscribe(laser_cfg, req);
+            let stream = subscribe(laser_cfg, Some(req));
             futures::pin_mut!(stream);
             while let Some(res) = stream.next().await {
                 match res {
@@ -101,13 +103,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 {
                                     let mut m = max_ls_ptr.lock().await;
-                                    if slot > *m { *m = slot; }
+                                    if slot > *m {
+                                        *m = slot;
+                                    }
                                 }
                                 // Store serialised update for comparison
                                 {
                                     let mut map = latest_ls.lock().await;
                                     let key_b58_copy = key_b58.clone();
-                                    let fp = fingerprint_account(&account_msg.data, account_msg.lamports);
+                                    let fp = fingerprint_account(
+                                        &account_msg.data,
+                                        account_msg.lamports,
+                                    );
                                     map.insert(key_b58_copy, fp);
                                 }
                                 println!("[LS] key={} slot={}", key_b58, slot);
@@ -157,12 +164,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 {
                                     let mut m = max_ys_ptr.lock().await;
-                                    if slot > *m { *m = slot; }
+                                    if slot > *m {
+                                        *m = slot;
+                                    }
                                 }
                                 {
                                     let mut map = latest_ys.lock().await;
                                     let key_b58_copy = key_b58.clone();
-                                    let fp = fingerprint_account(&account_msg.data, account_msg.lamports);
+                                    let fp = fingerprint_account(
+                                        &account_msg.data,
+                                        account_msg.lamports,
+                                    );
                                     map.insert(key_b58_copy, fp);
                                 }
                                 println!("[YS] key={} slot={}", key_b58, slot);
@@ -196,7 +208,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ls_guard = latest_ls.lock().await;
                 let ys_guard = latest_ys.lock().await;
 
-                let all_keys: HashSet<String> = ls_guard.keys().chain(ys_guard.keys()).cloned().collect();
+                let all_keys: HashSet<String> =
+                    ls_guard.keys().chain(ys_guard.keys()).cloned().collect();
 
                 let mut missing_ls = Vec::new();
                 let mut missing_ys = Vec::new();
@@ -231,21 +244,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     // compare only when both slots are known, match and are <= ready_slot (so unlikely to change)
-                    if ls_slot != ys_slot || ls_slot.unwrap_or(0) > ready_slot || ys_slot.unwrap_or(0) > ready_slot {
+                    if ls_slot != ys_slot
+                        || ls_slot.unwrap_or(0) > ready_slot
+                        || ys_slot.unwrap_or(0) > ready_slot
+                    {
                         continue;
                     }
                     if ls_bytes != ys_bytes {
                         error!("ACCOUNT PAYLOAD MISMATCH {}", k);
-                        if let Some(a) = ls_bytes { error!("LS payload: {}", a); }
-                        if let Some(b) = ys_bytes { error!("YS payload: {}", b); }
+                        if let Some(a) = ls_bytes {
+                            error!("LS payload: {}", a);
+                        }
+                        if let Some(b) = ys_bytes {
+                            error!("YS payload: {}", b);
+                        }
                         mismatched.push(k.clone());
                     }
                 }
 
-                println!("[{}] Integrity: missing LS={} missing YS={} mismatched={}", now, missing_ls.len(), missing_ys.len(), mismatched.len());
-                for k in &missing_ls { error!("ACCOUNT MISSING IN LASERSTREAM {}", k); }
-                for k in &missing_ys { error!("ACCOUNT MISSING IN YELLOWSTONE {}", k); }
-                for k in &mismatched { error!("ACCOUNT PAYLOAD MISMATCH {}", k); }
+                println!(
+                    "[{}] Integrity: missing LS={} missing YS={} mismatched={}",
+                    now,
+                    missing_ls.len(),
+                    missing_ys.len(),
+                    mismatched.len()
+                );
+                for k in &missing_ls {
+                    error!("ACCOUNT MISSING IN LASERSTREAM {}", k);
+                }
+                for k in &missing_ys {
+                    error!("ACCOUNT MISSING IN YELLOWSTONE {}", k);
+                }
+                for k in &mismatched {
+                    error!("ACCOUNT PAYLOAD MISMATCH {}", k);
+                }
             }
         });
         handles.push(handle);
@@ -255,4 +287,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     futures::future::join_all(handles).await;
 
     Ok(())
-} 
+}

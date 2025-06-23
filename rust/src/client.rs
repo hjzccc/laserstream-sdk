@@ -22,7 +22,7 @@ const FIXED_RECONNECT_INTERVAL_MS: u64 = 5000; // 5 seconds fixed interval
 #[instrument(skip(config, request))]
 pub fn subscribe(
     config: LaserstreamConfig,
-    request: SubscribeRequest,
+    request: Option<SubscribeRequest>,
 ) -> impl Stream<Item = Result<SubscribeUpdate, LaserstreamError>> {
     try_stream! {
         let mut reconnect_attempts = 0;
@@ -38,24 +38,24 @@ pub fn subscribe(
         let current_request = request.clone();
         let internal_slot_sub_id = format!("internal-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
 
-        let api_key_string = config.api_key.clone(); 
+        let api_key_string = config.api_key.clone();
 
         loop {
 
-            let mut attempt_request = current_request.clone();
+            let attempt_request =  current_request.clone();
 
             // Add slot tracking if not present
-            if attempt_request.slots.is_empty() {
-                attempt_request.slots.insert(
-                    internal_slot_sub_id.clone(),
-                    SubscribeRequestFilterSlots::default()
-                );
-            }
+            // if attempt_request.slots.is_empty() {
+            //     attempt_request.slots.insert(
+            //         internal_slot_sub_id.clone(),
+            //         SubscribeRequestFilterSlots::default()
+            //     );
+            // }
 
-            // On reconnection, use the last tracked slot
-            if reconnect_attempts > 0 && tracked_slot > 0 {
-                attempt_request.from_slot = Some(tracked_slot);
-            }
+            // // On reconnection, use the last tracked slot
+            // if reconnect_attempts > 0 && tracked_slot > 0 {
+            //     attempt_request.from_slot = Some(tracked_slot);
+            // }
 
             match connect_and_subscribe_once(&config, attempt_request, api_key_string.clone()).await { // Pass String API key
                 Ok((sender, stream)) => {
@@ -125,7 +125,7 @@ pub fn subscribe(
 #[instrument(skip(config, request, api_key))]
 async fn connect_and_subscribe_once(
     config: &LaserstreamConfig,
-    request: SubscribeRequest,
+    request: Option<SubscribeRequest>,
     api_key: String,
 ) -> Result<
     (
@@ -134,21 +134,22 @@ async fn connect_and_subscribe_once(
     ),
     tonic::Status,
 > {
-    let mut builder = GeyserGrpcClient::build_from_shared(config.endpoint.clone()) // Use endpoint String directly
-        .map_err(|e| tonic::Status::internal(format!("Build client error: {}", e)))?
-        .x_token(Some(api_key))
-        .map_err(|e| tonic::Status::internal(format!("Set token error: {}", e)))?
-        .connect_timeout(Duration::from_secs(10))
-        .max_decoding_message_size(1_000_000_000)
-        .timeout(Duration::from_secs(10))
-        .tls_config(ClientTlsConfig::new().with_enabled_roots())
-        .map_err(|e| tonic::Status::internal(format!("TLS config error: {}", e)))?
-        .connect()
-        .await
-        .map_err(|e| tonic::Status::internal(format!("Connect error: {}", e)))?;
+    let mut builder =
+        GeyserGrpcClient::build_from_shared(config.endpoint.clone()) // Use endpoint String directly
+            .map_err(|e| tonic::Status::internal(format!("Build client error: {}", e)))?
+            .x_token(Some(api_key))
+            .map_err(|e| tonic::Status::internal(format!("Set token error: {}", e)))?
+            .connect_timeout(Duration::from_secs(10))
+            .max_decoding_message_size(1_000_000_000)
+            .timeout(Duration::from_secs(10))
+            .tls_config(ClientTlsConfig::new().with_enabled_roots())
+            .map_err(|e| tonic::Status::internal(format!("TLS config error: {}", e)))?
+            .connect()
+            .await
+            .map_err(|e| tonic::Status::internal(format!("Connect error: {}", e)))?;
 
     let (sender, stream) = builder
-        .subscribe_with_request(Some(request))
+        .subscribe_with_request(request)
         .await
         .map_err(|e| tonic::Status::internal(format!("Subscribe error: {}", e)))?;
 
