@@ -27,7 +27,8 @@ pub fn subscribe(
     impl Stream<Item = Result<SubscribeUpdate, LaserstreamError>>,
     futures_mpsc::UnboundedSender<SubscribeRequest>,
 ) {
-    let (additional_request_tx, mut additional_request_rx) = futures_mpsc::unbounded();
+    let (additional_request_tx, additional_request_rx) = futures_mpsc::unbounded();
+    let mut additional_request_rx = additional_request_rx.fuse();
     let stream = try_stream! {
         let mut reconnect_attempts = 0;
         let mut tracked_slot: u64 = 0;
@@ -67,14 +68,15 @@ pub fn subscribe(
                     // Box sender and stream here before processing
                     let mut sender: Pin<Box<dyn futures_util::Sink<SubscribeRequest, Error = futures_mpsc::SendError> + Send>> = Box::pin(sender);
                     // Ensure the boxed stream yields Result<_, tonic::Status>
-                    let mut stream: Pin<Box<dyn Stream<Item = Result<SubscribeUpdate, tonic::Status>> + Send>> =
+                    let stream: Pin<Box<dyn Stream<Item = Result<SubscribeUpdate, tonic::Status>> + Send>> =
                         Box::pin(stream.map_err(|ystatus| {
                             // Convert yellowstone_grpc_proto::tonic::Status to tonic::Status
                             let code = tonic::Code::from_i32(ystatus.code() as i32);
                             tonic::Status::new(code, ystatus.message())
                         }));
+                        let mut stream = stream.fuse();
                         loop{
-                        tokio::select!{
+                        futures::select!{
                             stream_result = stream.next() => {
                                 match stream_result {
                                     Some(Ok(update)) => {
@@ -124,7 +126,7 @@ pub fn subscribe(
                                     None => {
                                         // Channel closed, but continue with the stream
                                         // You might want to break here if you want to stop when no more requests can be sent
-                                        // warn!("Additional request channel closed");
+                                        warn!("Additional request channel closed");
                                     }
                                 }
                             }
