@@ -4,7 +4,7 @@ use futures::TryStreamExt;
 use futures_channel::mpsc as futures_mpsc;
 use futures_util::{sink::SinkExt, Stream, StreamExt};
 use std::{pin::Pin, time::Duration};
-use tokio::time::sleep;
+use tokio::{sync::mpsc, time::sleep};
 use tonic::Status;
 use tracing::{error, instrument, warn};
 use uuid;
@@ -23,8 +23,12 @@ const FIXED_RECONNECT_INTERVAL_MS: u64 = 5000; // 5 seconds fixed interval
 pub fn subscribe(
     config: LaserstreamConfig,
     request: Option<SubscribeRequest>,
-) -> impl Stream<Item = Result<SubscribeUpdate, LaserstreamError>> {
-    try_stream! {
+) -> (
+    impl Stream<Item = Result<SubscribeUpdate, LaserstreamError>>,
+    futures_mpsc::UnboundedSender<SubscribeRequest>,
+) {
+    let (additional_request_tx, mut additional_request_rx) = futures_mpsc::unbounded();
+    let stream = try_stream! {
         let mut reconnect_attempts = 0;
         let mut tracked_slot: u64 = 0;
 
@@ -69,35 +73,64 @@ pub fn subscribe(
                             let code = tonic::Code::from_i32(ystatus.code() as i32);
                             tonic::Status::new(code, ystatus.message())
                         }));
+                        loop{
+                        tokio::select!{
+                            stream_result = stream.next() => {
+                                match stream_result {
+                                    Some(Ok(update)) => {
+                                        // Handle ping/pong
+                                        if matches!(&update.update_oneof, Some(UpdateOneof::Ping(_))) {
+                                            let pong_req = SubscribeRequest {
+                                                ping: Some(SubscribeRequestPing { id: 1 }),
+                                                ..Default::default()
+                                            };
+                                            if let Err(e) = sender.send(pong_req).await {
+                                                warn!(error = %e, "Failed to send pong");
+                                                break;
+                                            }
+                                            continue;
+                                        }
 
-                    while let Some(result) = stream.next().await {
-                        match result {
-                            Ok(update) => {
-                                // Handle ping/pong
-                                if matches!(&update.update_oneof, Some(UpdateOneof::Ping(_))) {
-                                    let pong_req = SubscribeRequest { ping: Some(SubscribeRequestPing { id: 1 }), ..Default::default() };
-                                    if let Err(e) = sender.send(pong_req).await {
-                                        warn!(error = %e, "Failed to send pong");
+                                        // Always track the latest slot if the update is a Slot update
+                                        if let Some(UpdateOneof::Slot(s)) = &update.update_oneof {
+                                            tracked_slot = s.slot;
+                                        }
+
+                                        // Yield the update to the stream consumer
+                                        yield update;
+                                    }
+                                    Some(Err(status)) => {
+                                        warn!(error = %status, "Stream error, attempting reconnection");
                                         break;
                                     }
-                                    continue;
+                                    None => {
+                                        warn!("Stream ended, preparing to reconnect...");
+                                        break;
+                                    }
                                 }
-
-                                // Always track the latest slot if the update is a Slot update
-                                if let Some(UpdateOneof::Slot(s)) = &update.update_oneof {
-                                    tracked_slot = s.slot;
-                                }
-
-                                // For non-internal updates:
-                                yield update;
                             }
-                            Err(status) => {
-                                // status is now tonic::Status due to map_err above
-                                warn!(error = %status, "Stream error, attempting reconnection");
+                            additional_req = additional_request_rx.next() => {
+                                // println!("Additional request received: {:?}", additional_req);
+                                match additional_req {
+                                    Some(new_request) => {
+                                        // Send the additional request through the gRPC connection
+                                        // println!("Sending additional request: {:?}", new_request);
+                                        if let Err(e) = sender.send(new_request).await {
+                                            warn!(error = %e, "Failed to send additional request");
+                                            break;
+                                        }
+                                        // println!("Additional request sent");
+                                    }
+                                    None => {
+                                        // Channel closed, but continue with the stream
+                                        // You might want to break here if you want to stop when no more requests can be sent
+                                        // warn!("Additional request channel closed");
+                                    }
+                                }
                             }
                         }
                     }
-                    warn!("Stream ended, preparing to reconnect...");
+                    warn!("Connection loop ended, preparing to reconnect...");
                 }
                 Err(err) => {
                     // Error from connect_and_subscribe_once (GeyserGrpcClientError)
@@ -119,7 +152,8 @@ pub fn subscribe(
                 sleep(delay).await;
             }
         }
-    }
+    };
+    (stream, additional_request_tx)
 }
 
 #[instrument(skip(config, request, api_key))]

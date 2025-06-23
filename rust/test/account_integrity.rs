@@ -33,18 +33,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Configuration ----
     const ACCOUNTS: [&str; 2] = [
-        "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", // Pump AMM program
-        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", // SPL Token program
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", // Pump AMM program
+        "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT", // SPL Token program
     ];
 
     let laser_cfg = LaserstreamConfig {
-        api_key: "".to_string(),
-        endpoint: "".to_string(),
+        api_key: "faca9a54-6f23-423b-a272-6e9d499d0436".to_string(),
+        endpoint: "https://laserstream-mainnet-ewr.helius-rpc.com".to_string(),
         ..Default::default()
     };
 
-    let yellowstone_endpoint = "".to_string();
-    let yellowstone_token = "".to_string();
+    let yellowstone_endpoint = "http://localhost:10000".to_string();
+    let yellowstone_token = "xToken".to_string();
 
     // ---- Subscription Request ----
     let mut accounts_map = HashMap::new();
@@ -86,8 +86,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let latest_ls = Arc::clone(&latest_ls);
         let max_ls_ptr = Arc::clone(&max_slot_ls);
         let handle = tokio::spawn(async move {
-            let stream = subscribe(laser_cfg, Some(req));
+            let (stream, sender) = subscribe(laser_cfg, Some(req));
+            let mut accounts_map = HashMap::new();
+            accounts_map.insert(
+                "tracked1".to_string(),
+                SubscribeRequestFilterAccounts {
+                    account: ["3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                    ..Default::default()
+                },
+            );
+
             futures::pin_mut!(stream);
+            println!("Laserstream task started");
+            sender
+                .unbounded_send(SubscribeRequest {
+                    accounts: accounts_map,
+                    commitment: Some(CommitmentLevel::Processed as i32),
+                    ..Default::default()
+                })
+                .unwrap();
             while let Some(res) = stream.next().await {
                 match res {
                     Ok(update) => {

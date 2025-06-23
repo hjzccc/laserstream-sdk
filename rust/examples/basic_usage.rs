@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Subscribe and Process ---
     println!("Connecting and subscribing...");
-    let stream = subscribe(config, Some(request));
+    let (stream, _) = subscribe(config, Some(request));
 
     // Pin the stream to the stack
     futures::pin_mut!(stream);
